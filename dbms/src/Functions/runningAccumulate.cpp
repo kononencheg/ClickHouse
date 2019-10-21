@@ -69,6 +69,8 @@ public:
 
     void executeImpl(Block & block, const ColumnNumbers & arguments, size_t result, size_t /*input_rows_count*/) override
     {
+        size_t number_of_arguments = arguments.size();
+
         const ColumnAggregateFunction * column_with_states
             = typeid_cast<const ColumnAggregateFunction *>(&*block.getByPosition(arguments.at(0)).column);
 
@@ -78,7 +80,10 @@ public:
                     + getName(),
                 ErrorCodes::ILLEGAL_COLUMN);
 
-        const ColumnPtr & column_with_groups = block.getByPosition(arguments.at(1)).column;
+        ColumnPtr column_with_groups;
+
+        if (number_of_arguments == 2)
+            column_with_groups = block.getByPosition(arguments[1]).column;
 
         AggregateFunctionPtr aggregate_function_ptr = column_with_states->getAggregateFunction();
         const IAggregateFunction & agg_func = *aggregate_function_ptr;
