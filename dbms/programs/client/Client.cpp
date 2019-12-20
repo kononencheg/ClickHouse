@@ -89,6 +89,39 @@
 #define DISABLE_LINE_WRAPPING "\033[?7l"
 #define ENABLE_LINE_WRAPPING "\033[?7h"
 
+#if USE_READLINE && RL_VERSION_MAJOR >= 7
+
+#define BRACK_PASTE_PREF "\033[200~"
+#define BRACK_PASTE_SUFF "\033[201~"
+
+#define BRACK_PASTE_LAST '~'
+#define BRACK_PASTE_SLEN 6
+
+/// This handler bypasses some unused macro/event checkings.
+static int clickhouse_rl_bracketed_paste_begin(int /* count */, int /* key */)
+{
+    std::string buf;
+    buf.reserve(128);
+
+    RL_SETSTATE(RL_STATE_MOREINPUT);
+    SCOPE_EXIT(RL_UNSETSTATE(RL_STATE_MOREINPUT));
+    int c;
+    while ((c = rl_read_key()) >= 0)
+    {
+        if (c == '\r')
+            c = '\n';
+        buf.push_back(c);
+        if (buf.size() >= BRACK_PASTE_SLEN && c == BRACK_PASTE_LAST && buf.substr(buf.size() - BRACK_PASTE_SLEN) == BRACK_PASTE_SUFF)
+        {
+            buf.resize(buf.size() - BRACK_PASTE_SLEN);
+            break;
+        }
+    }
+    return static_cast<size_t>(rl_insert_text(buf.c_str())) == buf.size() ? 0 : 1;
+}
+
+#endif
+
 namespace DB
 {
 
@@ -106,6 +139,7 @@ namespace ErrorCodes
     extern const int CANNOT_SET_SIGNAL_HANDLER;
     extern const int CANNOT_READLINE;
     extern const int SYSTEM_ERROR;
+    extern const int INVALID_USAGE_OF_INPUT;
 }
 
 
@@ -221,6 +255,7 @@ private:
 
         context.makeGlobalContext();
         context.setApplicationType(Context::ApplicationType::CLIENT);
+        context.setQueryParameters(query_parameters);
 
         /// settings and limits could be specified in config file, but passed settings has higher priority
         for (auto && setting : context.getSettingsRef())
@@ -460,6 +495,24 @@ private:
             if (rl_initialize())
                 throw Exception("Cannot initialize readline", ErrorCodes::CANNOT_READLINE);
 
+#if RL_VERSION_MAJOR >= 7
+            /// Enable bracketed-paste-mode only when multiquery is enabled and multiline is
+            ///  disabled, so that we are able to paste and execute multiline queries in a whole
+            ///  instead of erroring out, while be less intrusive.
+            if (config().has("multiquery") && !config().has("multiline"))
+            {
+                /// When bracketed paste mode is set, pasted text is bracketed with control sequences so
+                ///  that the program can differentiate pasted text from typed-in text. This helps
+                ///  clickhouse-client so that without -m flag, one can still paste multiline queries, and
+                ///  possibly get better pasting performance. See https://cirw.in/blog/bracketed-paste for
+                ///  more details.
+                rl_variable_bind("enable-bracketed-paste", "on");
+
+                /// Use our bracketed paste handler to get better user experience. See comments above.
+                rl_bind_keyseq(BRACK_PASTE_PREF, clickhouse_rl_bracketed_paste_begin);
+            }
+#endif
+
             auto clear_prompt_or_exit = [](int)
             {
                 /// This is signal safe.
@@ -562,9 +615,17 @@ private:
         if (is_interactive)
         {
             std::cout << "Connected to " << server_name
-                      << " server version " << server_version
-                      << " revision " << server_revision
-                      << "." << std::endl << std::endl;
+                << " server version " << server_version
+                << " revision " << server_revision
+                << "." << std::endl << std::endl;
+
+            if (std::make_tuple(VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH)
+                < std::make_tuple(server_version_major, server_version_minor, server_version_patch))
+            {
+                std::cout << "ClickHouse client version is older than ClickHouse server. "
+                    << "It may lack support for new features."
+                    << std::endl << std::endl;
+            }
         }
     }
 
@@ -622,7 +683,8 @@ private:
                     /// If the user restarts the client then after pressing the "up" button
                     /// every line of the query will be displayed separately.
                     std::string logged_query = input;
-                    std::replace(logged_query.begin(), logged_query.end(), '\n', ' ');
+                    if (config().has("multiline"))
+                        std::replace(logged_query.begin(), logged_query.end(), '\n', ' ');
                     add_history(logged_query.c_str());
 
 #if USE_READLINE && HAVE_READLINE_HISTORY
@@ -694,6 +756,9 @@ private:
 
     bool process(const String & text)
     {
+        if (exit_strings.end() != exit_strings.find(trim(text, [](char c){ return isWhitespaceASCII(c) || c == ';'; })))
+            return false;
+
         const bool test_mode = config().has("testmode");
         if (config().has("multiquery"))
         {
@@ -788,9 +853,6 @@ private:
 
     bool processSingleQuery(const String & line, ASTPtr parsed_query_ = nullptr)
     {
-        if (exit_strings.end() != exit_strings.find(trim(line, [](char c){ return isWhitespaceASCII(c) || c == ';'; })))
-            return false;
-
         resetOutput();
         got_exception = false;
 
@@ -843,9 +905,17 @@ private:
 
             connection->forceConnected(connection_parameters.timeouts);
 
-            /// INSERT query for which data transfer is needed (not an INSERT SELECT) is processed separately.
-            if (insert && !insert->select)
+            ASTPtr input_function;
+            if (insert && insert->select)
+                insert->tryFindInputFunction(input_function);
+
+            /// INSERT query for which data transfer is needed (not an INSERT SELECT or input()) is processed separately.
+            if (insert && (!insert->select || input_function))
+            {
+                if (input_function && insert->format.empty())
+                    throw Exception("FORMAT must be specified for function input()", ErrorCodes::INVALID_USAGE_OF_INPUT);
                 processInsertQuery();
+            }
             else
                 processOrdinaryQuery();
         }
@@ -1041,7 +1111,14 @@ private:
             /// Check if server send Exception packet
             auto packet_type = connection->checkPacket();
             if (packet_type && *packet_type == Protocol::Server::Exception)
+            {
+                /*
+                 * We're exiting with error, so it makes sense to kill the
+                 * input stream without waiting for it to complete.
+                 */
+                async_block_input->cancel(true);
                 return;
+            }
 
             connection->sendData(block);
             processed_rows += block.rows();
@@ -1155,7 +1232,7 @@ private:
     /// Returns true if one should continue receiving packets.
     bool receiveAndProcessPacket()
     {
-        Connection::Packet packet = connection->receivePacket();
+        Packet packet = connection->receivePacket();
 
         switch (packet.type)
         {
@@ -1203,7 +1280,7 @@ private:
     {
         while (true)
         {
-            Connection::Packet packet = connection->receivePacket();
+            Packet packet = connection->receivePacket();
 
             switch (packet.type)
             {
@@ -1237,7 +1314,7 @@ private:
     {
         while (true)
         {
-            Connection::Packet packet = connection->receivePacket();
+            Packet packet = connection->receivePacket();
 
             switch (packet.type)
             {
@@ -1864,6 +1941,9 @@ public:
 };
 
 }
+
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wmissing-declarations"
 
 int mainEntryClickHouseClient(int argc, char ** argv)
 {

@@ -1,5 +1,6 @@
 #include <Parsers/IAST.h>
 #include <Parsers/ASTSystemQuery.h>
+#include <Common/quoteString.h>
 
 
 namespace DB
@@ -59,6 +60,10 @@ const char * ASTSystemQuery::typeToString(Type type)
             return "STOP TTL MERGES";
         case Type::START_TTL_MERGES:
             return "START TTL MERGES";
+        case Type::STOP_MOVES:
+            return "STOP MOVES";
+        case Type::START_MOVES:
+            return "START MOVES";
         case Type::STOP_FETCHES:
             return "STOP FETCHES";
         case Type::START_FETCHES:
@@ -88,17 +93,27 @@ void ASTSystemQuery::formatImpl(const FormatSettings & settings, FormatState &, 
     settings.ostr << (settings.hilite ? hilite_keyword : "") << "SYSTEM " << (settings.hilite ? hilite_none : "");
     settings.ostr << typeToString(type);
 
-    auto print_database_table = [&] ()
+    auto print_database_table = [&]
     {
         settings.ostr << " ";
-
         if (!target_database.empty())
         {
             settings.ostr << (settings.hilite ? hilite_identifier : "") << backQuoteIfNeed(target_database)
                           << (settings.hilite ? hilite_none : "") << ".";
         }
-
         settings.ostr << (settings.hilite ? hilite_identifier : "") << backQuoteIfNeed(target_table)
+                      << (settings.hilite ? hilite_none : "");
+    };
+
+    auto print_database_dictionary = [&]
+    {
+        settings.ostr << " ";
+        if (!target_database.empty())
+        {
+            settings.ostr << (settings.hilite ? hilite_identifier : "") << backQuoteIfNeed(target_database)
+                          << (settings.hilite ? hilite_none : "") << ".";
+        }
+        settings.ostr << (settings.hilite ? hilite_identifier : "") << backQuoteIfNeed(target_dictionary)
                       << (settings.hilite ? hilite_none : "");
     };
 
@@ -106,6 +121,8 @@ void ASTSystemQuery::formatImpl(const FormatSettings & settings, FormatState &, 
         || type == Type::START_MERGES
         || type == Type::STOP_TTL_MERGES
         || type == Type::START_TTL_MERGES
+        || type == Type::STOP_MOVES
+        || type == Type::START_MOVES
         || type == Type::STOP_FETCHES
         || type == Type::START_FETCHES
         || type == Type::STOP_REPLICATED_SENDS
@@ -123,7 +140,7 @@ void ASTSystemQuery::formatImpl(const FormatSettings & settings, FormatState &, 
         print_database_table();
     }
     else if (type == Type::RELOAD_DICTIONARY)
-        settings.ostr << " " << backQuoteIfNeed(target_dictionary);
+        print_database_dictionary();
 }
 
 

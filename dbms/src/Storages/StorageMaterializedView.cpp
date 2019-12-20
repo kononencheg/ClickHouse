@@ -9,7 +9,7 @@
 #include <Interpreters/InterpreterCreateQuery.h>
 #include <Interpreters/InterpreterDropQuery.h>
 #include <Interpreters/InterpreterRenameQuery.h>
-#include <Interpreters/DatabaseAndTableWithAlias.h>
+#include <Interpreters/getTableExpressions.h>
 #include <Interpreters/AddDefaultDatabaseVisitor.h>
 #include <DataStreams/IBlockInputStream.h>
 #include <DataStreams/IBlockOutputStream.h>
@@ -341,10 +341,10 @@ StoragePtr StorageMaterializedView::tryGetTargetTable() const
     return global_context.tryGetTable(target_database_name, target_table_name);
 }
 
-String StorageMaterializedView::getDataPath() const
+Strings StorageMaterializedView::getDataPaths() const
 {
     if (auto table = tryGetTargetTable())
-        return table->getDataPath();
+        return table->getDataPaths();
     return {};
 }
 

@@ -1,20 +1,33 @@
 #include <Interpreters/AnalyzedJoin.h>
-#include <Interpreters/DatabaseAndTableWithAlias.h>
-#include <Interpreters/InterpreterSelectWithUnionQuery.h>
 #include <Interpreters/Join.h>
+#include <Interpreters/MergeJoin.h>
 
 #include <Parsers/ASTExpressionList.h>
-#include <Parsers/ASTTablesInSelectQuery.h>
-#include <Parsers/ASTSelectQuery.h>
 
+#include <Core/Settings.h>
 #include <Core/Block.h>
-#include <Storages/IStorage.h>
 
 #include <DataTypes/DataTypeNullable.h>
 
 
 namespace DB
 {
+
+namespace ErrorCodes
+{
+    extern const int LOGICAL_ERROR;
+    extern const int PARAMETER_OUT_OF_BOUND;
+}
+
+AnalyzedJoin::AnalyzedJoin(const Settings & settings, const String & tmp_path_)
+    : size_limits(SizeLimits{settings.max_rows_in_join, settings.max_bytes_in_join, settings.join_overflow_mode})
+    , default_max_bytes(settings.default_max_bytes_in_join)
+    , join_use_nulls(settings.join_use_nulls)
+    , partial_merge_join(settings.partial_merge_join)
+    , partial_merge_join_optimizations(settings.partial_merge_join_optimizations)
+    , partial_merge_join_rows_in_right_blocks(settings.partial_merge_join_rows_in_right_blocks)
+    , tmp_path(tmp_path_)
+{}
 
 void AnalyzedJoin::addUsingKey(const ASTPtr & ast)
 {
@@ -129,6 +142,16 @@ Names AnalyzedJoin::requiredJoinedNames() const
     return Names(required_columns_set.begin(), required_columns_set.end());
 }
 
+NameSet AnalyzedJoin::requiredRightKeys() const
+{
+    NameSet required;
+    for (const auto & name : key_names_right)
+        for (const auto & column : columns_added_by_join)
+            if (name == column.name)
+                required.insert(name);
+    return required;
+}
+
 NamesWithAliases AnalyzedJoin::getRequiredColumns(const Block & sample, const Names & action_required_columns) const
 {
     NameSet required_columns(action_required_columns.begin(), action_required_columns.end());
@@ -176,21 +199,6 @@ void AnalyzedJoin::addJoinedColumnsAndCorrectNullability(Block & sample_block) c
 
         bool make_nullable = join_use_nulls && left_or_full_join;
 
-        if (!make_nullable)
-        {
-            /// Keys from right table are usually not stored in Join, but copied from the left one.
-            /// So, if left key is nullable, let's make right key nullable too.
-            /// Note: for some join types it's not needed and, probably, may be removed.
-            /// Note: changing this code, take into account the implementation in Join.cpp.
-            auto it = std::find(key_names_right.begin(), key_names_right.end(), col.name);
-            if (it != key_names_right.end())
-            {
-                auto pos = it - key_names_right.begin();
-                const auto & left_key_name = key_names_left[pos];
-                make_nullable = sample_block.getByName(left_key_name).type->isNullable();
-            }
-        }
-
         if (make_nullable && res_type->canBeInsideNullable())
             res_type = makeNullable(res_type);
 
@@ -209,62 +217,24 @@ bool AnalyzedJoin::sameJoin(const AnalyzedJoin * x, const AnalyzedJoin * y)
         && x->table_join.strictness == y->table_join.strictness
         && x->key_names_left == y->key_names_left
         && x->key_names_right == y->key_names_right
-        && x->columns_added_by_join == y->columns_added_by_join
-        && x->hash_join == y->hash_join;
+        && x->columns_added_by_join == y->columns_added_by_join;
 }
 
-BlockInputStreamPtr AnalyzedJoin::createStreamWithNonJoinedDataIfFullOrRightJoin(const Block & source_header, UInt64 max_block_size) const
+JoinPtr makeJoin(std::shared_ptr<AnalyzedJoin> table_join, const Block & right_sample_block)
 {
-    if (isRightOrFull(table_join.kind))
-        return hash_join->createStreamWithNonJoinedRows(source_header, *this, max_block_size);
-    return {};
+    bool is_left_or_inner = isLeft(table_join->kind()) || isInner(table_join->kind());
+    bool is_asof = (table_join->strictness() == ASTTableJoin::Strictness::Asof);
+
+    if (table_join->partial_merge_join && !is_asof && is_left_or_inner)
+        return std::make_shared<MergeJoin>(table_join, right_sample_block);
+    return std::make_shared<Join>(table_join, right_sample_block);
 }
 
-JoinPtr AnalyzedJoin::makeHashJoin(const Block & sample_block, const SizeLimits & size_limits_for_join) const
+bool isMergeJoin(const JoinPtr & join)
 {
-    auto join = std::make_shared<Join>(key_names_right, join_use_nulls, size_limits_for_join, table_join.kind, table_join.strictness);
-    join->setSampleBlock(sample_block);
-    return join;
-}
-
-void AnalyzedJoin::joinBlock(Block & block) const
-{
-    hash_join->joinBlock(block, *this);
-}
-
-void AnalyzedJoin::joinTotals(Block & block) const
-{
-    hash_join->joinTotals(block);
-}
-
-bool AnalyzedJoin::hasTotals() const
-{
-    return hash_join->hasTotals();
-}
-
-NamesAndTypesList getNamesAndTypeListFromTableExpression(const ASTTableExpression & table_expression, const Context & context)
-{
-    NamesAndTypesList names_and_type_list;
-    if (table_expression.subquery)
-    {
-        const auto & subquery = table_expression.subquery->children.at(0);
-        names_and_type_list = InterpreterSelectWithUnionQuery::getSampleBlock(subquery, context).getNamesAndTypesList();
-    }
-    else if (table_expression.table_function)
-    {
-        const auto table_function = table_expression.table_function;
-        auto query_context = const_cast<Context *>(&context.getQueryContext());
-        const auto & function_storage = query_context->executeTableFunction(table_function);
-        names_and_type_list = function_storage->getSampleBlockNonMaterialized().getNamesAndTypesList();
-    }
-    else if (table_expression.database_and_table_name)
-    {
-        DatabaseAndTableWithAlias database_table(table_expression.database_and_table_name);
-        const auto & table = context.getTable(database_table.database, database_table.table);
-        names_and_type_list = table->getSampleBlockNonMaterialized().getNamesAndTypesList();
-    }
-
-    return names_and_type_list;
+    if (join)
+        return typeid_cast<const MergeJoin *>(join.get());
+    return false;
 }
 
 }

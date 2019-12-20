@@ -6,8 +6,6 @@ The `MySQL` database engine translate queries to the MySQL server so you can per
 
 You cannot perform the following queries:
 
-- `ATTACH`/`DETACH`
-- `DROP`
 - `RENAME`
 - `CREATE TABLE`
 - `ALTER`
@@ -55,7 +53,7 @@ All other MySQL data types are converted into [String](../data_types/string.md).
 
 Table in MySQL:
 
-```
+```text
 mysql> USE test;
 Database changed
 

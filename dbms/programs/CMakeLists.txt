@@ -19,7 +19,7 @@ if(NOT (MAKE_STATIC_LIBRARIES OR SPLIT_SHARED_LIBRARIES))
     set(CLICKHOUSE_ONE_SHARED 1)
 endif()
 
-configure_file (config_tools.h.in ${CMAKE_CURRENT_BINARY_DIR}/config_tools.h)
+configure_file (config_tools.h.in ${ConfigIncludePath}/config_tools.h)
 
 
 macro(clickhouse_target_link_split_lib target name)
@@ -205,6 +205,9 @@ else ()
 
     add_custom_target (clickhouse-bundle ALL DEPENDS ${CLICKHOUSE_BUNDLE})
 
+    if (USE_GDB_ADD_INDEX)
+        add_custom_command(TARGET clickhouse POST_BUILD COMMAND ${GDB_ADD_INDEX_EXE} clickhouse COMMENT "Adding .gdb-index to clickhouse" VERBATIM)
+    endif()
 endif ()
 
 if (TARGET clickhouse-server AND TARGET copy-headers)

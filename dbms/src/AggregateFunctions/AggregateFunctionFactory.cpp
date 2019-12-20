@@ -16,6 +16,7 @@
 #include <Common/typeid_cast.h>
 
 #include <Poco/String.h>
+#include "registerAggregateFunctions.h"
 
 
 namespace DB
@@ -158,6 +159,12 @@ bool AggregateFunctionFactory::isAggregateFunctionName(const String & name, int 
         return isAggregateFunctionName(name.substr(0, name.size() - combinator->getName().size()), recursion_level + 1);
 
     return false;
+}
+
+AggregateFunctionFactory & AggregateFunctionFactory::instance()
+{
+    static AggregateFunctionFactory ret;
+    return ret;
 }
 
 }

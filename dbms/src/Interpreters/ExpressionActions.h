@@ -21,15 +21,17 @@ namespace ErrorCodes
 }
 
 class AnalyzedJoin;
+class IJoin;
+using JoinPtr = std::shared_ptr<IJoin>;
 
-class IPreparedFunction;
-using PreparedFunctionPtr = std::shared_ptr<IPreparedFunction>;
+class IExecutableFunction;
+using ExecutableFunctionPtr = std::shared_ptr<IExecutableFunction>;
 
 class IFunctionBase;
 using FunctionBasePtr = std::shared_ptr<IFunctionBase>;
 
-class IFunctionBuilder;
-using FunctionBuilderPtr = std::shared_ptr<IFunctionBuilder>;
+class IFunctionOverloadResolver;
+using FunctionOverloadResolverPtr = std::shared_ptr<IFunctionOverloadResolver>;
 
 class IDataType;
 using DataTypePtr = std::shared_ptr<const IDataType>;
@@ -79,18 +81,18 @@ public:
     ColumnPtr added_column;
 
     /// For APPLY_FUNCTION and LEFT ARRAY JOIN.
-    /// FunctionBuilder is used before action was added to ExpressionActions (when we don't know types of arguments).
-    FunctionBuilderPtr function_builder;
+    /// OverloadResolver is used before action was added to ExpressionActions (when we don't know types of arguments).
+    FunctionOverloadResolverPtr function_builder;
 
     /// For unaligned [LEFT] ARRAY JOIN
-    FunctionBuilderPtr function_length;
-    FunctionBuilderPtr function_greatest;
-    FunctionBuilderPtr function_arrayResize;
+    FunctionOverloadResolverPtr function_length;
+    FunctionOverloadResolverPtr function_greatest;
+    FunctionOverloadResolverPtr function_arrayResize;
 
     /// Can be used after action was added to ExpressionActions if we want to get function signature or properties like monotonicity.
     FunctionBasePtr function_base;
     /// Prepared function which is used in function execution.
-    PreparedFunctionPtr function;
+    ExecutableFunctionPtr function;
     Names argument_names;
     bool is_function_compiled = false;
 
@@ -101,13 +103,14 @@ public:
 
     /// For JOIN
     std::shared_ptr<const AnalyzedJoin> table_join;
+    JoinPtr join;
 
     /// For PROJECT.
     NamesWithAliases projection;
 
     /// If result_name_ == "", as name "function_name(arguments separated by commas) is used".
     static ExpressionAction applyFunction(
-        const FunctionBuilderPtr & function_, const std::vector<std::string> & argument_names_, std::string result_name_ = "");
+            const FunctionOverloadResolverPtr & function_, const std::vector<std::string> & argument_names_, std::string result_name_ = "");
 
     static ExpressionAction addColumn(const ColumnWithTypeAndName & added_column_);
     static ExpressionAction removeColumn(const std::string & removed_name);
@@ -116,7 +119,7 @@ public:
     static ExpressionAction project(const Names & projected_columns_);
     static ExpressionAction addAliases(const NamesWithAliases & aliased_columns_);
     static ExpressionAction arrayJoin(const NameSet & array_joined_columns, bool array_join_is_left, const Context & context);
-    static ExpressionAction ordinaryJoin(std::shared_ptr<AnalyzedJoin> join);
+    static ExpressionAction ordinaryJoin(std::shared_ptr<AnalyzedJoin> table_join, JoinPtr join);
 
     /// Which columns necessary to perform this action.
     Names getNeededColumns() const;
@@ -232,10 +235,17 @@ public:
 
     static std::string getSmallestColumn(const NamesAndTypesList & columns);
 
-    std::shared_ptr<const AnalyzedJoin> getTableJoin() const;
+    JoinPtr getTableJoinAlgo() const;
 
     const Settings & getSettings() const { return settings; }
 
+    /// Check if result block has no rows. True if it's definite, false if we can't say for sure.
+    /// Call it only after subqueries for join were executed.
+    bool resultIsAlwaysEmpty() const;
+
+    /// Check if column is always zero. True if it's definite, false if we can't say for sure.
+    /// Call it only after subqueries for sets were executed.
+    bool checkColumnIsAlwaysFalse(const String & column_name) const;
 
     struct ActionsHash
     {

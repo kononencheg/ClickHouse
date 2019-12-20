@@ -49,9 +49,11 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
     ParserKeyword s_attach_partition("ATTACH PARTITION");
     ParserKeyword s_detach_partition("DETACH PARTITION");
     ParserKeyword s_drop_partition("DROP PARTITION");
+    ParserKeyword s_move_partition("MOVE PARTITION");
     ParserKeyword s_drop_detached_partition("DROP DETACHED PARTITION");
     ParserKeyword s_drop_detached_part("DROP DETACHED PART");
     ParserKeyword s_attach_part("ATTACH PART");
+    ParserKeyword s_move_part("MOVE PART");
     ParserKeyword s_fetch_partition("FETCH PARTITION");
     ParserKeyword s_replace_partition("REPLACE PARTITION");
     ParserKeyword s_freeze("FREEZE");
@@ -64,6 +66,9 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
     ParserKeyword s_in_partition("IN PARTITION");
     ParserKeyword s_with("WITH");
     ParserKeyword s_name("NAME");
+
+    ParserKeyword s_to_disk("TO DISK");
+    ParserKeyword s_to_volume("TO VOLUME");
 
     ParserKeyword s_delete_where("DELETE WHERE");
     ParserKeyword s_update("UPDATE");
@@ -82,6 +87,7 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
         /* allow_empty = */ false);
     ParserSetQuery parser_settings(true);
     ParserNameList values_p;
+    ParserTTLExpressionList parser_ttl_list;
 
     if (is_live_view)
     {
@@ -221,6 +227,47 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
                 if (!parser_partition.parse(pos, command->partition, expected))
                     return false;
             }
+        }
+        else if (s_move_part.ignore(pos, expected))
+        {
+            if (!parser_string_literal.parse(pos, command->partition, expected))
+                return false;
+
+            command->type = ASTAlterCommand::MOVE_PARTITION;
+            command->part = true;
+
+            if (s_to_disk.ignore(pos))
+                command->move_destination_type = PartDestinationType::DISK;
+            else if (s_to_volume.ignore(pos))
+                command->move_destination_type = PartDestinationType::VOLUME;
+            else
+                return false;
+
+            ASTPtr ast_space_name;
+            if (!parser_string_literal.parse(pos, ast_space_name, expected))
+                return false;
+
+            command->move_destination_name = ast_space_name->as<ASTLiteral &>().value.get<const String &>();
+        }
+        else if (s_move_partition.ignore(pos, expected))
+        {
+            if (!parser_partition.parse(pos, command->partition, expected))
+                return false;
+
+            command->type = ASTAlterCommand::MOVE_PARTITION;
+
+            if (s_to_disk.ignore(pos))
+                command->move_destination_type = PartDestinationType::DISK;
+            else if (s_to_volume.ignore(pos))
+                command->move_destination_type = PartDestinationType::VOLUME;
+            else
+                return false;
+
+            ASTPtr ast_space_name;
+            if (!parser_string_literal.parse(pos, ast_space_name, expected))
+                return false;
+
+            command->move_destination_name = ast_space_name->as<ASTLiteral &>().value.get<const String &>();
         }
         else if (s_add_constraint.ignore(pos, expected))
         {
@@ -385,7 +432,7 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
         }
         else if (s_modify_ttl.ignore(pos, expected))
         {
-            if (!parser_exp_elem.parse(pos, command->ttl, expected))
+            if (!parser_ttl_list.parse(pos, command->ttl, expected))
                 return false;
             command->type = ASTAlterCommand::MODIFY_TTL;
         }

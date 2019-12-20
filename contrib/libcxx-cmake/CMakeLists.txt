@@ -1,3 +1,5 @@
+include(CheckCXXCompilerFlag)
+
 set(LIBCXX_SOURCE_DIR ${ClickHouse_SOURCE_DIR}/contrib/libcxx)
 
 set(SRCS
@@ -42,7 +44,19 @@ add_library(cxx ${SRCS})
 
 target_include_directories(cxx SYSTEM BEFORE PUBLIC $<BUILD_INTERFACE:${LIBCXX_SOURCE_DIR}/include>)
 target_compile_definitions(cxx PRIVATE -D_LIBCPP_BUILDING_LIBRARY -DLIBCXX_BUILDING_LIBCXXABI)
-target_compile_options(cxx PUBLIC -nostdinc++ -Wno-reserved-id-macro)
+
+target_compile_options(cxx PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-nostdinc++>)
+
+check_cxx_compiler_flag(-Wreserved-id-macro HAVE_WARNING_RESERVED_ID_MACRO)
+if (HAVE_WARNING_RESERVED_ID_MACRO)
+    target_compile_options(cxx PUBLIC -Wno-reserved-id-macro)
+endif ()
+
+check_cxx_compiler_flag(-Wctad-maybe-unsupported HAVE_WARNING_CTAD_MAYBE_UNSUPPORTED)
+if (HAVE_WARNING_CTAD_MAYBE_UNSUPPORTED)
+    target_compile_options(cxx PUBLIC -Wno-ctad-maybe-unsupported)
+endif ()
+
 target_link_libraries(cxx PUBLIC cxxabi)
 
 install(

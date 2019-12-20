@@ -1,4 +1,5 @@
 #include "config_core.h"
+#include <Interpreters/Set.h>
 #include <Common/ProfileEvents.h>
 #include <Common/SipHash.h>
 #include <Interpreters/ExpressionActions.h>
@@ -13,6 +14,8 @@
 #include <Functions/IFunction.h>
 #include <set>
 #include <optional>
+#include <Columns/ColumnSet.h>
+#include <Functions/FunctionHelpers.h>
 
 
 namespace ProfileEvents
@@ -59,7 +62,7 @@ Names ExpressionAction::getNeededColumns() const
 
 
 ExpressionAction ExpressionAction::applyFunction(
-    const FunctionBuilderPtr & function_,
+    const FunctionOverloadResolverPtr & function_,
     const std::vector<std::string> & argument_names_,
     std::string result_name_)
 {
@@ -160,11 +163,12 @@ ExpressionAction ExpressionAction::arrayJoin(const NameSet & array_joined_column
     return a;
 }
 
-ExpressionAction ExpressionAction::ordinaryJoin(std::shared_ptr<AnalyzedJoin> table_join)
+ExpressionAction ExpressionAction::ordinaryJoin(std::shared_ptr<AnalyzedJoin> table_join, JoinPtr join)
 {
     ExpressionAction a;
     a.type = JOIN;
     a.table_join = table_join;
+    a.join = join;
     return a;
 }
 
@@ -201,9 +205,7 @@ void ExpressionAction::prepare(Block & sample_block, const Settings & settings, 
             size_t result_position = sample_block.columns();
             sample_block.insert({nullptr, result_type, result_name});
             function = function_base->prepare(sample_block, arguments, result_position);
-
-            if (auto * prepared_function = dynamic_cast<PreparedFunctionImpl *>(function.get()))
-                prepared_function->createLowCardinalityResultCache(settings.max_threads);
+            function->createLowCardinalityResultCache(settings.max_threads);
 
             bool compile_expressions = false;
 #if USE_EMBEDDED_COMPILER
@@ -475,7 +477,7 @@ void ExpressionAction::execute(Block & block, bool dry_run) const
 
         case JOIN:
         {
-            table_join->joinBlock(block);
+            join->joinBlock(block);
             break;
         }
 
@@ -543,7 +545,7 @@ void ExpressionAction::executeOnTotals(Block & block) const
     if (type != JOIN)
         execute(block, false);
     else
-        table_join->joinTotals(block);
+        join->joinTotals(block);
 }
 
 
@@ -763,7 +765,7 @@ void ExpressionActions::execute(Block & block, bool dry_run) const
 bool ExpressionActions::hasTotalsInJoin() const
 {
     for (const auto & action : actions)
-        if (action.table_join && action.table_join->hasTotals())
+        if (action.table_join && action.join->hasTotals())
             return true;
     return false;
 }
@@ -1157,12 +1159,67 @@ void ExpressionActions::optimizeArrayJoin()
 }
 
 
-std::shared_ptr<const AnalyzedJoin> ExpressionActions::getTableJoin() const
+JoinPtr ExpressionActions::getTableJoinAlgo() const
 {
     for (const auto & action : actions)
-        if (action.table_join)
-            return action.table_join;
+        if (action.join)
+            return action.join;
     return {};
+}
+
+
+bool ExpressionActions::resultIsAlwaysEmpty() const
+{
+    /// Check that has join which returns empty result.
+
+    for (auto & action : actions)
+    {
+        if (action.type == action.JOIN && action.join && action.join->alwaysReturnsEmptySet())
+            return true;
+    }
+
+    return false;
+}
+
+
+bool ExpressionActions::checkColumnIsAlwaysFalse(const String & column_name) const
+{
+    /// Check has column in (empty set).
+    String set_to_check;
+
+    for (auto it = actions.rbegin(); it != actions.rend(); ++it)
+    {
+        auto & action = *it;
+        if (action.type == action.APPLY_FUNCTION && action.function_base)
+        {
+            auto name = action.function_base->getName();
+            if ((name == "in" || name == "globalIn")
+                && action.result_name == column_name
+                && action.argument_names.size() > 1)
+            {
+                set_to_check = action.argument_names[1];
+                break;
+            }
+        }
+    }
+
+    if (!set_to_check.empty())
+    {
+        for (auto & action : actions)
+        {
+            if (action.type == action.ADD_COLUMN && action.result_name == set_to_check)
+            {
+                // Constant ColumnSet cannot be empty, so we only need to check non-constant ones.
+                if (auto * column_set = checkAndGetColumn<const ColumnSet>(action.added_column.get()))
+                {
+                    if (column_set->getData()->isCreated() && column_set->getData()->getTotalRowCount() == 0)
+                        return true;
+                }
+            }
+        }
+    }
+
+    return false;
 }
 
 

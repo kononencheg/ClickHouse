@@ -3,6 +3,7 @@
 #include <Parsers/IAST.h>
 #include <Parsers/ASTQueryWithTableAndOutput.h>
 #include <Parsers/ASTQueryWithOnCluster.h>
+#include <Parsers/ASTTTLElement.h>
 
 
 namespace DB
@@ -42,6 +43,7 @@ public:
         DROP_PARTITION,
         DROP_DETACHED_PARTITION,
         ATTACH_PARTITION,
+        MOVE_PARTITION,
         REPLACE_PARTITION,
         FETCH_PARTITION,
         FREEZE_PARTITION,
@@ -117,7 +119,7 @@ public:
 
     bool detach = false;        /// true for DETACH PARTITION
 
-    bool part = false;          /// true for ATTACH PART and DROP DETACHED PART
+    bool part = false;          /// true for ATTACH PART, DROP DETACHED PART and MOVE
 
     bool clear_column = false;  /// for CLEAR COLUMN (do not drop column from metadata)
 
@@ -126,6 +128,10 @@ public:
     bool if_not_exists = false; /// option for ADD_COLUMN
 
     bool if_exists = false;     /// option for DROP_COLUMN, MODIFY_COLUMN, COMMENT_COLUMN
+
+    PartDestinationType move_destination_type; /// option for MOVE PART/PARTITION
+
+    String move_destination_name;             /// option for MOVE PART/PARTITION
 
     /** For FETCH PARTITION - the path in ZK to the shard, from which to download the partition.
      */

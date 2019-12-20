@@ -1,20 +1,15 @@
+#include "registerFunctions.h"
+
 namespace DB
 {
-
-class FunctionFactory;
-
-void registerFunctionAddressToSymbol(FunctionFactory & factory);
-void registerFunctionDemangle(FunctionFactory & factory);
-void registerFunctionAddressToLine(FunctionFactory & factory);
-void registerFunctionTrap(FunctionFactory & factory);
-
 void registerFunctionsIntrospection(FunctionFactory & factory)
 {
+#if defined(OS_LINUX)
     registerFunctionAddressToSymbol(factory);
-    registerFunctionDemangle(factory);
     registerFunctionAddressToLine(factory);
+#endif
+    registerFunctionDemangle(factory);
     registerFunctionTrap(factory);
 }
 
 }
-

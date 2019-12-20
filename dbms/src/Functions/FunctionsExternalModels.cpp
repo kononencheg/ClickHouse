@@ -3,7 +3,7 @@
 #include <Functions/FunctionFactory.h>
 
 #include <Interpreters/Context.h>
-#include <Interpreters/ExternalModels.h>
+#include <Interpreters/ExternalModelsLoader.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <Columns/ColumnString.h>
@@ -15,6 +15,7 @@
 #include <Columns/ColumnTuple.h>
 #include <DataTypes/DataTypeTuple.h>
 #include <Common/assert_cast.h>
+#include "registerFunctions.h"
 
 
 namespace DB
@@ -22,7 +23,7 @@ namespace DB
 
 FunctionPtr FunctionModelEvaluate::create(const Context & context)
 {
-    return std::make_shared<FunctionModelEvaluate>(context.getExternalModels());
+    return std::make_shared<FunctionModelEvaluate>(context.getExternalModelsLoader());
 }
 
 namespace ErrorCodes
@@ -51,7 +52,7 @@ DataTypePtr FunctionModelEvaluate::getReturnTypeImpl(const ColumnsWithTypeAndNam
     for (size_t i = 1; i < arguments.size(); ++i)
         has_nullable = has_nullable || arguments[i].type->isNullable();
 
-    auto model = models.getModel(name_col->getValue<String>());
+    auto model = models_loader.getModel(name_col->getValue<String>());
     auto type = model->getReturnType();
 
     if (has_nullable)
@@ -78,7 +79,7 @@ void FunctionModelEvaluate::executeImpl(Block & block, const ColumnNumbers & arg
         throw Exception("First argument of function " + getName() + " must be a constant string",
                         ErrorCodes::ILLEGAL_COLUMN);
 
-    auto model = models.getModel(name_col->getValue<String>());
+    auto model = models_loader.getModel(name_col->getValue<String>());
 
     ColumnRawPtrs columns;
     Columns materialized_columns;
