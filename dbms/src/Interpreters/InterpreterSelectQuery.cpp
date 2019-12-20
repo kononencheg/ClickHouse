@@ -534,9 +534,8 @@ Block InterpreterSelectQuery::getSampleBlockImpl()
             options.to_stage,
             *context,
             storage,
-            options.only_analyze,  // only_types
-            {}     // filter_info
-        ,
+            options.only_analyze,
+            filter_info,
             source_header
         );
 
